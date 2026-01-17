@@ -1,0 +1,5 @@
+# Replace example.com with your domain when deploying with Caddy
+example.com {
+  reverse_proxy app:3000
+  encode gzip
+}
