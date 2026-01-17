@@ -1,0 +1,105 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Запись на маникюр</title></head>
+<body>
+<h2>Запись на маникюр</h2>
+<label>Дата: <input type="date" id="date" /></label>
+<div>
+  <label>Услуга:
+    <select id="service">
+      <option value="S">S — короткие</option>
+      <option value="M">M — средние</option>
+      <option value="L">L — длинные</option>
+    </select>
+  </label>
+</div>
+<button id="check">Показать слоты</button>
+<div id="slots"></div>
+<script>
+  const tg = window.Telegram?.WebApp;
+  if(tg) tg.expand();
+  const user = tg?.initDataUnsafe?.user || {};
+  document.getElementById('check').onclick = async ()=>{
+    const date = document.getElementById('date').value;
+    if(!date){ alert('Выберите дату'); return; }
+    const res = await fetch(`/slots?date=${date}`);
+    const data = await res.json();
+    const container = document.getElementById('slots');
+    container.innerHTML = '';
+    if(data.available.length===0){ container.innerText = 'Нет доступных слотов'; return; }
+    data.available.forEach(t=>{
+      const btn = document.createElement('button');
+      btn.innerText = t;
+      btn.onclick = async ()=>{
+        const service = document.getElementById('service').value;
+        const resp = await fetch('/book', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({date, time:t, service, userId: user.id || 'anon', name: user.first_name || ''})
+        });
+        if(resp.status===200) { alert('Запись подтверждена'); btn.disabled=true; }
+        else if(resp.status===409) alert('Уже занято');
+        else { const e = await resp.json(); alert(e.error || 'Ошибка'); }
+      };
+      container.appendChild(btn);
+      container.appendChild(document.createTextNode(' '));
+    });
+  };
+</script>
+</body>
+</html>
+// server.js
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const bodyParser = require('body-parser');
+
+const DATA_FILE = path.join(__dirname,'bookings.json');
+if(!fs.existsSync(DATA_FILE)) fs.writeFileSync(DATA_FILE, '[]');
+
+const app = express();
+app.use(bodyParser.json());
+app.use(express.static('public')); // для index.html
+
+function readBookings(){
+  return JSON.parse(fs.readFileSync(DATA_FILE,'utf8'));
+}
+function writeBookings(data){
+  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+}
+
+function generateSlots(dateStr){
+  // hourly slots 11..16
+  const slots = [];
+  for(let h=11; h<=16; h++){
+    slots.push(`${String(h).padStart(2,'0')}:00`);
+  }
+  return slots;
+}
+
+app.get('/slots', (req,res)=>{
+  const date = req.query.date; // YYYY-MM-DD
+  if(!date) return res.status(400).json({error:'date required'});
+  const day = Number(date.split('-')[2]);
+  if(day === 25) return res.json({date, available: []});
+  const all = generateSlots(date);
+  const bookings = readBookings().filter(b=>b.date===date).map(b=>b.time);
+  const available = all.filter(t=>!bookings.includes(t));
+  res.json({date, available});
+});
+
+app.post('/book', (req,res)=>{
+  const {date, time, service, userId, name} = req.body;
+  if(!date||!time||!service||!userId) return res.status(400).json({error:'missing'});
+  const day = Number(date.split('-')[2]);
+  if(day === 25) return res.status(400).json({error:'booking not allowed on 25th'});
+  const bookings = readBookings();
+  if(bookings.find(b=>b.date===date && b.time===time)) return res.status(409).json({error:'slot taken'});
+  const entry = {date,time,service,userId,name,createdAt: new Date().toISOString()};
+  bookings.push(entry);
+  writeBookings(bookings);
+  res.json({ok:true, booking:entry});
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, ()=>console.log('Server on',PORT));
